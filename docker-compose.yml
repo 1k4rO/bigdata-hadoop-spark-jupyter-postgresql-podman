@@ -1,0 +1,112 @@
+version: "3"
+
+services:
+
+  metastore-db:
+    image: postgres:15
+    container_name: metastore-db
+    restart: always
+    environment:
+      POSTGRES_DB: hive_metastore
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hivepass
+    ports:
+      - "5432:5432"
+    volumes:
+      - metastore_pgdata:/var/lib/postgresql/data
+      - ./hive-schema-2.3.0.postgres.sql:/docker-entrypoint-initdb.d/init-hive-schema.sql:Z
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    restart: always
+    environment:
+      - CLUSTER_NAME=taller
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - HDFS_CONF_dfs_replication=1
+      - HDFS_CONF_dfs_permissions_enabled=false
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    volumes:
+      - namenode_data:/hadoop/dfs/name
+            
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode
+    restart: always
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - SERVICE_PRECONDITION=namenode:9870
+      - HDFS_CONF_dfs_replication=1
+      - HDFS_CONF_dfs_permissions_enabled=false
+    volumes:
+      - datanode_data:/hadoop/dfs/data
+    depends_on:
+      - namenode
+            
+  spark-master:
+    image: spark:3.5.0-scala2.12-java17-python3-ubuntu
+    container_name: spark-master
+    restart: always
+    command: ["/opt/spark/bin/spark-class","org.apache.spark.deploy.master.Master"]
+    environment:
+      - SPARK_CONF_spark_hadoop_fs_defaultFS=hdfs://namenode:9000
+      - SPARK_CONF_spark_sql_warehouse_dir=hdfs://namenode:9000/user/hive/warehouse
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    depends_on:
+      - namenode
+      - metastore-db
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+        
+  spark-worker:
+    image: spark:3.5.0-scala2.12-java17-python3-ubuntu
+    container_name: spark-worker
+    restart: always
+    command: ["/opt/spark/bin/spark-class","org.apache.spark.deploy.worker.Worker","spark://spark-master:7077"]
+    environment:
+      - SPARK_CONF_spark_hadoop_fs_defaultFS=hdfs://namenode:9000
+      - SPARK_MASTER_HOST=spark-master
+    depends_on:
+      - spark-master
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+
+  jupyterlab:
+    build: .
+    container_name: jupyterlab
+    restart: always
+    ports:
+      - "8888:8888"
+      - "4040:4040"
+    environment:
+      - JUPYTER_TOKEN=taller
+      - HADOOP_USER_NAME=jovyan
+      - SPARK_MASTER=spark://spark-master:7077
+      - SPARK_CONF_spark_hadoop_fs_defaultFS=hdfs://namenode:9000
+      - SPARK_DRIVER_MEMORY=2g
+    volumes:
+      - ./notebooks:/home/jovyan/work:Z
+    depends_on:
+      - spark-worker
+      - metastore-db
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+  
+volumes:
+  namenode_data:
+  datanode_data:
+  metastore_pgdata:
